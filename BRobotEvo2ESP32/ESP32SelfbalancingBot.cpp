@@ -18,6 +18,67 @@
 #include "OSC.h"
 #include "esp32-hal-ledc.h"
 
+#include "SDcard.h"
+#include "vs1053_ext.h"
+
+int volume=15;
+
+VS1053 mp3(PIN_VS1053_CS, PIN_VS1053_XDCS, PIN_VS1053_DREQ);
+
+void testVS1053() {
+  SPI.begin();
+  mp3.begin();
+  mp3.setVolume(volume);
+//     mp3.connecttohost("streambbr.ir-media-tec.com/berlin/mp3-128/vtuner_web_mp3/");
+  //mp3.connecttohost("stream.landeswelle.de/lwt/mp3-192"); // mp3 192kb/s
+	//mp3.connecttohost("listen.ai-radio.org:8000/320.ogg?cc=DE&now=1511557873.987&");  // ogg
+	//mp3.connecttohost("tophits.radiomonster.fm/320.mp3");  //bitrate 320k
+	//mp3.connecttohost("hellwegradiowest.radiovonhier.de/high/stream.mp3"); // Transfer Encoding: chunked
+	mp3.connecttoSD("/mp3/alert.mp3"); // SD card
+	//mp3.connecttospeech("Wenn die Hunde schlafen, kann der Wolf gut Schafe stehlen.", "de");
+}
+
+// next code is optional:
+void vs1053_trace(const char *info) {                // called from vs1053
+    Serial.print("TRACE:       ");
+    Serial.print(info);                             // debug infos
+}
+// void vs1053_info(const char *info) {                // called from vs1053
+//     Serial.print("DEBUG:       ");
+//     Serial.print(info);                             // debug infos
+// }
+void vs1053_showstation(const char *info){          // called from vs1053
+    Serial.print("STATION:     ");
+    Serial.println(info);                           // Show station name
+}
+void vs1053_showstreamtitle(const char *info){      // called from vs1053
+    Serial.print("STREAMTITLE: ");
+    Serial.print(info);                             // Show title
+}
+void vs1053_showstreaminfo(const char *info){       // called from vs1053
+    Serial.print("STREAMINFO:  ");
+    Serial.print(info);                             // Show streaminfo
+}
+void vs1053_eof_mp3(const char *info){              // called from vs1053
+      Serial.print("vs1053_eof: ");
+      Serial.print(info);                           // end of mp3 file (filename)
+}
+void vs1053_bitrate(const char *br){		    // called from vs1053
+      Serial.print("BITRATE: ");
+      Serial.println(String(br)+"kBit/s");          // bitrate of current stream
+}
+void vs1053_commercial(const char *info){           // called from vs1053
+    Serial.print("ADVERTISING: ");
+    Serial.println(String(info)+"sec");             // info is the duration of advertising
+}
+void vs1053_icyurl(const char *info){               // called from vs1053
+    Serial.print("Homepage: ");  
+    Serial.println(info);                           // info contains the URL
+}
+void vs1053_eof_speech(const char *info){           // called from vs1053
+    Serial.println(info);                           
+}
+
 void initTimers();
 
 void initWifiAP() {
@@ -36,6 +97,7 @@ void initMPU6050() {
 }
 
 void setup() {
+  
 	pinMode(PIN_ENABLE_MOTORS, OUTPUT);
 	digitalWrite(PIN_ENABLE_MOTORS, HIGH);
 
@@ -53,6 +115,13 @@ void setup() {
 
 	Serial.begin(115200);
 
+  
+  // SD card test
+  if (sdcardTest(PIN_SDCARD_CS)) {
+    // SD card ok, test vs1053
+    testVS1053();
+  }
+  
 	Wire.begin();
 
 	initWifiAP();
@@ -181,6 +250,9 @@ void processOSCMsg() {
 }
 
 void loop() {
+  
+  mp3.loop();
+  
 	OSC_MsgRead();
 
 	if (OSCnewMessage) {

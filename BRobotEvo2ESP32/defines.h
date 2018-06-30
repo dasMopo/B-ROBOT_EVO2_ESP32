@@ -10,7 +10,7 @@
 
 #define PIN_ENABLE_MOTORS 12
 
-#define PIN_SERVO 17
+#define PIN_SERVO 32
 
 #define PIN_MOTOR1_DIR 27
 #define PIN_MOTOR1_STEP 14
@@ -53,8 +53,8 @@
 
 // Servo definitions
 #define SERVO_AUX_NEUTRO 4444  // Servo neutral position
-#define SERVO_MIN_PULSEWIDTH SERVO_AUX_NEUTRO - 2700
-#define SERVO_MAX_PULSEWIDTH SERVO_AUX_NEUTRO + 2700
+#define SERVO_MIN_PULSEWIDTH SERVO_AUX_NEUTRO + 2700
+#define SERVO_MAX_PULSEWIDTH SERVO_AUX_NEUTRO - 2700
 
 #define SERVO2_NEUTRO 4444
 #define SERVO2_RANGE 8400
@@ -69,7 +69,21 @@
 
 #define MICROSTEPPING 16   // 8 or 16 for 1/8 or 1/16 driver microstepping (default:16)
 
-#define DEBUG 0   // 0 = No debug info (default) DEBUG 1 for console output
+// SPI defines
+#define PIN_SCK           18
+#define PIN_MOSI          23
+#define PIN_MISO          19
+
+// SD card I/O pins
+#define PIN_SDCARD_CS     4
+
+// VS1053 CS and additional pin definitions
+#define PIN_VS1053_CS     5
+#define PIN_VS1053_XDCS   15
+// #define PIN_VS1053_XRST   33 // now connected to EN
+#define PIN_VS1053_DREQ   13
+
+#define DEBUG 1   // 0 = No debug info (default) DEBUG 1 for console output
 
 // AUX definitions
 #define CLR(x,y) (x&=(~(1<<y)))
