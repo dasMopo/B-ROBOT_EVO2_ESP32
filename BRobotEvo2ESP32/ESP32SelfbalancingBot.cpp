@@ -23,12 +23,18 @@
 
 int volume = 18;
 int soundTaskCore = 0;
+int equilibrioceptionTaskCore = 1;
+bool running = true;
 
 // TaskHandle_t      maintask ;
 TaskHandle_t      soundtask;
-TaskHandle_t      equilibrioception;
+TaskHandle_t      equilibrioceptiontask;
 
 VS1053 mp3(PIN_VS1053_CS, PIN_VS1053_XDCS, PIN_VS1053_DREQ);
+
+// forward declaration of task objects
+void soundTask( void * pvParameters );
+void equilibrioception( void * pvParameters );
 
 void testVS1053() {
   SPI.begin();
@@ -101,13 +107,6 @@ void initMPU6050() {
 	MPU6050_calibrate();
 }
 
-void soundTask( void * pvParameters ) {
-  while (true) {
-    if (mp3.playing) mp3.loop();
-    else vTaskDelay ( 1 ) ;   
-  }
-}
-
 void setup() {
   
 	pinMode(PIN_ENABLE_MOTORS, OUTPUT);
@@ -151,6 +150,22 @@ void setup() {
 
 	digitalWrite(PIN_ENABLE_MOTORS, HIGH);
   
+  
+  // spawn equilibrioception
+  Serial.print("Starting to create equilibrioception task on core ");
+  Serial.println(equilibrioceptionTaskCore);
+
+  xTaskCreatePinnedToCore(
+                    equilibrioception,   /* Function to implement the task */
+                    "equilibrioceptionTask", /* Name of the task */
+                    1600,      /* Stack size in words */
+                    NULL,       /* Task input parameter */
+                    1,          /* Priority of the task */
+                    &equilibrioceptiontask,       /* Task handle. */
+                    equilibrioceptionTaskCore);  /* Core where the task should run */
+
+  Serial.println("equilibrioceptionTask created...");    
+    
   // spawn soundTask
   Serial.print("Starting to create task on core ");
   Serial.println(soundTaskCore);
@@ -277,207 +292,215 @@ void processOSCMsg() {
 	}
 }
 
+void soundTask( void * pvParameters ) {
+  while (running) {
+    if (mp3.playing) mp3.loop();
+    else vTaskDelay ( 1 ) ;   
+  }
+}
+
+void equilibrioception( void * pvParameters ) {
+  while (running) {
+    timer_value = micros();
+
+    if (MPU6050_newData()) {
+      MPU6050_read_3axis();
+
+      loop_counter++;
+      slow_loop_counter++;
+      dt = (timer_value - timer_old) * 0.000001; // dt in seconds
+      timer_old = timer_value;
+
+      angle_adjusted_Old = angle_adjusted;
+      // Get new orientation angle from IMU (MPU6050)
+      float MPU_sensor_angle = MPU6050_getAngle(dt);
+      angle_adjusted = MPU_sensor_angle + angle_offset;
+      if ((MPU_sensor_angle > -15) && (MPU_sensor_angle < 15))
+        angle_adjusted_filtered = angle_adjusted_filtered * 0.99
+            + MPU_sensor_angle * 0.01;
+
+//   #if DEBUG==1
+//       Serial.print(dt);
+//       Serial.print(" ");
+//       Serial.print(angle_offset);
+//       Serial.print(" ");
+//       Serial.print(angle_adjusted);
+//       Serial.print(",");
+//       Serial.println(angle_adjusted_filtered);
+//   #endif
+      //Serial.print("\t");
+
+      // We calculate the estimated robot speed:
+      // Estimated_Speed = angular_velocity_of_stepper_motors(combined) - angular_velocity_of_robot(angle measured by IMU)
+      actual_robot_speed = (speed_M1 + speed_M2) / 2; // Positive: forward
+
+      int16_t angular_velocity = (angle_adjusted - angle_adjusted_Old) * 25.0; // 25 is an empirical extracted factor to adjust for real units
+      int16_t estimated_speed = -actual_robot_speed + angular_velocity;
+      estimated_speed_filtered = estimated_speed_filtered * 0.9
+          + (float) estimated_speed * 0.1; // low pass filter on estimated speed
+
+//   #if DEBUG==2
+//           Serial.print(angle_adjusted);
+//           Serial.print(" ");
+//           Serial.println(estimated_speed_filtered);
+//   #endif
+
+      if (positionControlMode) {
+        // POSITION CONTROL. INPUT: Target steps for each motor. Output: motors speed
+        motor1_control = positionPDControl(steps1, target_steps1,
+            Kp_position, Kd_position, speed_M1);
+        motor2_control = positionPDControl(steps2, target_steps2,
+            Kp_position, Kd_position, speed_M2);
+
+        // Convert from motor position control to throttle / steering commands
+        throttle = (motor1_control + motor2_control) / 2;
+        throttle = constrain(throttle, -190, 190);
+        steering = motor2_control - motor1_control;
+        steering = constrain(steering, -50, 50);
+      }
+
+      // ROBOT SPEED CONTROL: This is a PI controller.
+      //    input:user throttle(robot speed), variable: estimated robot speed, output: target robot angle to get the desired speed
+      target_angle = speedPIControl(dt, estimated_speed_filtered, throttle,
+          Kp_thr, Ki_thr);
+      target_angle = constrain(target_angle, -max_target_angle,
+          max_target_angle); // limited output
+
+//   #if DEBUG==3
+//       Serial.print(angle_adjusted);
+//       Serial.print(" ");
+//       Serial.print(estimated_speed_filtered);
+//       Serial.print(" ");
+//       Serial.println(target_angle);
+//   #endif
+
+      // Stability control (100Hz loop): This is a PD controller.
+      //    input: robot target angle(from SPEED CONTROL), variable: robot angle, output: Motor speed
+      //    We integrate the output (sumatory), so the output is really the motor acceleration, not motor speed.
+      control_output += stabilityPDControl(dt, angle_adjusted, target_angle,
+          Kp, Kd);
+      control_output = constrain(control_output, -MAX_CONTROL_OUTPUT,
+          MAX_CONTROL_OUTPUT); // Limit max output from control
+
+      // The steering part from the user is injected directly to the output
+      motor1 = control_output + steering;
+      motor2 = control_output - steering;
+
+      // Limit max speed (control output)
+      motor1 = constrain(motor1, -MAX_CONTROL_OUTPUT, MAX_CONTROL_OUTPUT);
+      motor2 = constrain(motor2, -MAX_CONTROL_OUTPUT, MAX_CONTROL_OUTPUT);
+
+      int angle_ready;
+      if (OSCpush[0])     // If we press the SERVO button we start to move
+        angle_ready = 82;
+      else
+        angle_ready = 74;  // Default angle
+      if ((angle_adjusted < angle_ready) && (angle_adjusted > -angle_ready)) // Is robot ready (upright?)
+          {
+        // NORMAL MODE
+        digitalWrite(PIN_ENABLE_MOTORS, LOW);  // Motors enable
+        // NOW we send the commands to the motors
+        setMotorSpeedM1(motor1);
+        setMotorSpeedM2(motor2);
+      } else   // Robot not ready (flat), angle > angle_ready => ROBOT OFF
+      {
+        digitalWrite(PIN_ENABLE_MOTORS, HIGH);  // Disable motors
+        setMotorSpeedM1(0);
+        setMotorSpeedM2(0);
+        PID_errorSum = 0;  // Reset PID I term
+        Kp = KP_RAISEUP;   // CONTROL GAINS FOR RAISE UP
+        Kd = KD_RAISEUP;
+        Kp_thr = KP_THROTTLE_RAISEUP;
+        Ki_thr = KI_THROTTLE_RAISEUP;
+        // RESET steps
+        steps1 = 0;
+        steps2 = 0;
+        positionControlMode = false;
+        OSCmove_mode = false;
+        throttle = 0;
+        steering = 0;
+      }
+    } // End of new IMU data
+  }  
+}
+
 void loop() {
-  
-	OSC_MsgRead();
+    OSC_MsgRead();
 
-	if (OSCnewMessage) {
-		OSCnewMessage = 0;
-		processOSCMsg();
-	}
-
-	timer_value = micros();
-
-	if (MPU6050_newData()) {
-		MPU6050_read_3axis();
-
-		loop_counter++;
-		slow_loop_counter++;
-		dt = (timer_value - timer_old) * 0.000001; // dt in seconds
-		timer_old = timer_value;
-
-		angle_adjusted_Old = angle_adjusted;
-		// Get new orientation angle from IMU (MPU6050)
-		float MPU_sensor_angle = MPU6050_getAngle(dt);
-		angle_adjusted = MPU_sensor_angle + angle_offset;
-		if ((MPU_sensor_angle > -15) && (MPU_sensor_angle < 15))
-			angle_adjusted_filtered = angle_adjusted_filtered * 0.99
-					+ MPU_sensor_angle * 0.01;
-
-#if DEBUG==1
-		Serial.print(dt);
-		Serial.print(" ");
-		Serial.print(angle_offset);
-		Serial.print(" ");
-		Serial.print(angle_adjusted);
-		Serial.print(",");
-		Serial.println(angle_adjusted_filtered);
-#endif
-		//Serial.print("\t");
-
-		// We calculate the estimated robot speed:
-		// Estimated_Speed = angular_velocity_of_stepper_motors(combined) - angular_velocity_of_robot(angle measured by IMU)
-		actual_robot_speed = (speed_M1 + speed_M2) / 2; // Positive: forward
-
-		int16_t angular_velocity = (angle_adjusted - angle_adjusted_Old) * 25.0; // 25 is an empirical extracted factor to adjust for real units
-		int16_t estimated_speed = -actual_robot_speed + angular_velocity;
-		estimated_speed_filtered = estimated_speed_filtered * 0.9
-				+ (float) estimated_speed * 0.1; // low pass filter on estimated speed
-
-#if DEBUG==2
-				Serial.print(angle_adjusted);
-				Serial.print(" ");
-				Serial.println(estimated_speed_filtered);
-#endif
-
-		if (positionControlMode) {
-			// POSITION CONTROL. INPUT: Target steps for each motor. Output: motors speed
-			motor1_control = positionPDControl(steps1, target_steps1,
-					Kp_position, Kd_position, speed_M1);
-			motor2_control = positionPDControl(steps2, target_steps2,
-					Kp_position, Kd_position, speed_M2);
-
-			// Convert from motor position control to throttle / steering commands
-			throttle = (motor1_control + motor2_control) / 2;
-			throttle = constrain(throttle, -190, 190);
-			steering = motor2_control - motor1_control;
-			steering = constrain(steering, -50, 50);
-		}
-
-		// ROBOT SPEED CONTROL: This is a PI controller.
-		//    input:user throttle(robot speed), variable: estimated robot speed, output: target robot angle to get the desired speed
-		target_angle = speedPIControl(dt, estimated_speed_filtered, throttle,
-				Kp_thr, Ki_thr);
-		target_angle = constrain(target_angle, -max_target_angle,
-				max_target_angle); // limited output
-
-#if DEBUG==3
-		Serial.print(angle_adjusted);
-		Serial.print(" ");
-		Serial.print(estimated_speed_filtered);
-		Serial.print(" ");
-		Serial.println(target_angle);
-#endif
-
-		// Stability control (100Hz loop): This is a PD controller.
-		//    input: robot target angle(from SPEED CONTROL), variable: robot angle, output: Motor speed
-		//    We integrate the output (sumatory), so the output is really the motor acceleration, not motor speed.
-		control_output += stabilityPDControl(dt, angle_adjusted, target_angle,
-				Kp, Kd);
-		control_output = constrain(control_output, -MAX_CONTROL_OUTPUT,
-				MAX_CONTROL_OUTPUT); // Limit max output from control
-
-		// The steering part from the user is injected directly to the output
-		motor1 = control_output + steering;
-		motor2 = control_output - steering;
-
-		// Limit max speed (control output)
-		motor1 = constrain(motor1, -MAX_CONTROL_OUTPUT, MAX_CONTROL_OUTPUT);
-		motor2 = constrain(motor2, -MAX_CONTROL_OUTPUT, MAX_CONTROL_OUTPUT);
-
-		int angle_ready;
-		if (OSCpush[0])     // If we press the SERVO button we start to move
-			angle_ready = 82;
-		else
-			angle_ready = 74;  // Default angle
-		if ((angle_adjusted < angle_ready) && (angle_adjusted > -angle_ready)) // Is robot ready (upright?)
-				{
-			// NORMAL MODE
-			digitalWrite(PIN_ENABLE_MOTORS, LOW);  // Motors enable
-			// NOW we send the commands to the motors
-			setMotorSpeedM1(motor1);
-			setMotorSpeedM2(motor2);
-		} else   // Robot not ready (flat), angle > angle_ready => ROBOT OFF
-		{
-			digitalWrite(PIN_ENABLE_MOTORS, HIGH);  // Disable motors
-			setMotorSpeedM1(0);
-			setMotorSpeedM2(0);
-			PID_errorSum = 0;  // Reset PID I term
-			Kp = KP_RAISEUP;   // CONTROL GAINS FOR RAISE UP
-			Kd = KD_RAISEUP;
-			Kp_thr = KP_THROTTLE_RAISEUP;
-			Ki_thr = KI_THROTTLE_RAISEUP;
-			// RESET steps
-			steps1 = 0;
-			steps2 = 0;
-			positionControlMode = false;
-			OSCmove_mode = false;
-			throttle = 0;
-			steering = 0;
-		}
-		// Push1 Move servo arm
-		if (OSCpush[0])  // Move arm
-		{
-			if (angle_adjusted > -40)
-				ledcWrite(6, SERVO_MIN_PULSEWIDTH);
-			else
-				ledcWrite(6, SERVO_MAX_PULSEWIDTH);
-		} else
-			ledcWrite(6, SERVO_AUX_NEUTRO);
-
-    if (OSCpush[4]) // play sound
-    {
-      if (!mp3.playing)
-        mp3.connecttoSD("/mp3/alert.mp3");
+    if (OSCnewMessage) {
+      OSCnewMessage = 0;
+      processOSCMsg();
     }
-    
-    if (OSCpush[5]) // play sound
-    {
-      if (!mp3.playing)
-        mp3.connecttoSD("/mp3/valkyr.mp3");
-    }
-    
-		// Servo2
-		//ledcWrite(6, SERVO2_NEUTRO + (OSCfader[2] - 0.5) * SERVO2_RANGE);
+      // Push1 Move servo arm
+      if (OSCpush[0])  // Move arm
+      {
+        if (angle_adjusted > -40)
+          ledcWrite(6, SERVO_MIN_PULSEWIDTH);
+        else
+          ledcWrite(6, SERVO_MAX_PULSEWIDTH);
+      } else
+        ledcWrite(6, SERVO_AUX_NEUTRO);
 
-		// Normal condition?
-		if ((angle_adjusted < 56) && (angle_adjusted > -56)) {
-			Kp = Kp_user;            // Default user control gains
-			Kd = Kd_user;
-			Kp_thr = Kp_thr_user;
-			Ki_thr = Ki_thr_user;
-		} else // We are in the raise up procedure => we use special control parameters
-		{
-			Kp = KP_RAISEUP;         // CONTROL GAINS FOR RAISE UP
-			Kd = KD_RAISEUP;
-			Kp_thr = KP_THROTTLE_RAISEUP;
-			Ki_thr = KI_THROTTLE_RAISEUP;
-		}
+      if (OSCpush[4]) // play sound
+      {
+        if (!mp3.playing)
+          mp3.connecttoSD("/mp3/alert.mp3");
+      }
+      
+      if (OSCpush[5]) // play sound
+      {
+        if (!mp3.playing)
+          mp3.connecttoSD("/mp3/valkyr.mp3");
+      }
+      
+      // Servo2
+      //ledcWrite(6, SERVO2_NEUTRO + (OSCfader[2] - 0.5) * SERVO2_RANGE);
 
-	} // End of new IMU data
-	
-	// Medium loop 7.5Hz
-	if (loop_counter >= 15) {
-		loop_counter = 0;
-		// Telemetry here?
-#if TELEMETRY_ANGLE==1
-		char auxS[25];
-		int ang_out = constrain(int(angle_adjusted * 10), -900, 900);
-		sprintf(auxS, "$tA,%+04d", ang_out);
-		OSC_MsgSend(auxS, 25);
-#endif
-#if TELEMETRY_DEBUG==1
-		char auxS[50];
-		sprintf(auxS, "$tD,%d,%d,%ld", int(angle_adjusted * 10), int(estimated_speed_filtered), steps1);
-		OSC_MsgSend(auxS, 50);
-#endif
+      // Normal condition?
+      if ((angle_adjusted < 56) && (angle_adjusted > -56)) {
+        Kp = Kp_user;            // Default user control gains
+        Kd = Kd_user;
+        Kp_thr = Kp_thr_user;
+        Ki_thr = Ki_thr_user;
+      } else // We are in the raise up procedure => we use special control parameters
+      {
+        Kp = KP_RAISEUP;         // CONTROL GAINS FOR RAISE UP
+        Kd = KD_RAISEUP;
+        Kp_thr = KP_THROTTLE_RAISEUP;
+        Ki_thr = KI_THROTTLE_RAISEUP;
+      }
+    // Medium loop 7.5Hz
+    if (loop_counter >= 15) {
+      loop_counter = 0;
+      // Telemetry here?
+  #if TELEMETRY_ANGLE==1
+      char auxS[25];
+      int ang_out = constrain(int(angle_adjusted * 10), -900, 900);
+      sprintf(auxS, "$tA,%+04d", ang_out);
+      OSC_MsgSend(auxS, 25);
+  #endif
+  #if TELEMETRY_DEBUG==1
+      char auxS[50];
+      sprintf(auxS, "$tD,%d,%d,%ld", int(angle_adjusted * 10), int(estimated_speed_filtered), steps1);
+      OSC_MsgSend(auxS, 50);
+  #endif
 
-	} // End of medium loop
-	else if (slow_loop_counter >= 100) // 1Hz
-			{
-		slow_loop_counter = 0;
-		// Read  status
-#if TELEMETRY_BATTERY==1
-		BatteryValue = (BatteryValue + BROBOT_readBattery(false)) / 2;
-		sendBattery_counter++;
-		if (sendBattery_counter >= 3) { //Every 3 seconds we send a message
-			sendBattery_counter = 0;
-			Serial.print("B");
-			Serial.println(BatteryValue);
-			char auxS[25];
-			sprintf(auxS, "$tB,%04d", BatteryValue);
-			OSC_MsgSend(auxS, 25);
-		}
-#endif
-	}  // End of slow loop
+    } // End of medium loop
+    else if (slow_loop_counter >= 100) // 1Hz
+        {
+      slow_loop_counter = 0;
+      // Read  status
+  #if TELEMETRY_BATTERY==1
+      BatteryValue = (BatteryValue + BROBOT_readBattery(false)) / 2;
+      sendBattery_counter++;
+      if (sendBattery_counter >= 3) { //Every 3 seconds we send a message
+        sendBattery_counter = 0;
+        Serial.print("B");
+        Serial.println(BatteryValue);
+        char auxS[25];
+        sprintf(auxS, "$tB,%04d", BatteryValue);
+        OSC_MsgSend(auxS, 25);
+      }
+  #endif
+    }  // End of slow loop
 }
