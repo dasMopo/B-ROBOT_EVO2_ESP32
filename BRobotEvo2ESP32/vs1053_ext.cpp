@@ -147,6 +147,7 @@ void VS1053::begin(){
 //    if(vs1053_info) vs1053_info(sbuf);
    printDetails("After last clocksetting \n");
     delay(100);
+    playing = false;
 }
 //---------------------------------------------------------------------------------------
 void VS1053::setVolume(uint8_t vol){
@@ -640,7 +641,8 @@ void VS1053::loop(){
 
     uint16_t part=0;                                        // part at the end of the ringbuffer
     uint16_t bcs=0;                                         // bytes can current send
-    uint16_t maxchunk=0x1000;                               // max number of bytes to read, 4096d is enough
+//     uint16_t maxchunk=0x1000;                               // max number of bytes to read, 4096d is enough
+    uint16_t maxchunk=0x0200;                               // max number of bytes to read, 8d is enough
     uint16_t btp=0;                                         // bytes to play
     int16_t  res=0;                                         // number of bytes getting from client
     uint32_t av=0;                                          // available in stream (uin16_t is to small by playing from SD)
@@ -663,9 +665,10 @@ void VS1053::loop(){
              sprintf(sbuf,"End of mp3file %s\n",m_mp3title.c_str());
              if(vs1053_trace) vs1053_trace(sbuf);
              if(vs1053_eof_mp3) vs1053_eof_mp3(m_mp3title.c_str());
+             playing = false;
          }
     }
-    // - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - -
+/*    // - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - -
     if(m_f_webstream){                                      // Playing file from URL?
         if(m_ssl==false) av=client.available();// Available from stream
         if(m_ssl==true)  av=clientsecure.available();// Available from stream
@@ -802,7 +805,7 @@ void VS1053::loop(){
             }
             else i=0;
         }
-    } // end if(webstream)
+    }*/ // end if(webstream)
 }
 //---------------------------------------------------------------------------------------
 void VS1053::stop_mp3client(){
@@ -964,6 +967,7 @@ bool VS1053::connecttoSD(String sdfile){
               mp3file.available());
       vs1053_trace(sbuf);
     }
+    playing = true;
     return true;
 }
 //---------------------------------------------------------------------------------------

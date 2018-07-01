@@ -21,7 +21,12 @@
 #include "SDcard.h"
 #include "vs1053_ext.h"
 
-int volume=15;
+int volume = 18;
+int soundTaskCore = 0;
+
+// TaskHandle_t      maintask ;
+TaskHandle_t      soundtask;
+TaskHandle_t      equilibrioception;
 
 VS1053 mp3(PIN_VS1053_CS, PIN_VS1053_XDCS, PIN_VS1053_DREQ);
 
@@ -96,6 +101,13 @@ void initMPU6050() {
 	MPU6050_calibrate();
 }
 
+void soundTask( void * pvParameters ) {
+  while (true) {
+    if (mp3.playing) mp3.loop();
+    else vTaskDelay ( 1 ) ;   
+  }
+}
+
 void setup() {
   
 	pinMode(PIN_ENABLE_MOTORS, OUTPUT);
@@ -115,14 +127,7 @@ void setup() {
 
 	Serial.begin(115200);
 
-  
-  // SD card test
-  if (sdcardTest(PIN_SDCARD_CS)) {
-    // SD card ok, test vs1053
-    testVS1053();
-  }
-  
-	Wire.begin();
+  Wire.begin();
 
 	initWifiAP();
 
@@ -145,6 +150,29 @@ void setup() {
 	ledcWrite(6, SERVO_AUX_NEUTRO);
 
 	digitalWrite(PIN_ENABLE_MOTORS, HIGH);
+  
+  // spawn soundTask
+  Serial.print("Starting to create task on core ");
+  Serial.println(soundTaskCore);
+
+  xTaskCreatePinnedToCore(
+                    soundTask,   /* Function to implement the task */
+                    "soundTask", /* Name of the task */
+                    1600,      /* Stack size in words */
+                    NULL,       /* Task input parameter */
+                    0,          /* Priority of the task */
+                    &soundtask,       /* Task handle. */
+                    soundTaskCore);  /* Core where the task should run */
+
+  Serial.println("soundTask created...");  
+  
+  // SD card test
+  if (sdcardTest(PIN_SDCARD_CS)) {
+    // SD card ok, test vs1053
+    testVS1053();
+  }  
+  
+  
 }
 
 void processOSCMsg() {
@@ -235,7 +263,7 @@ void processOSCMsg() {
 			angle_offset = angle_adjusted_filtered;
 			Serial.println(angle_offset);
 		}
-
+		
 		// Kill robot => Sleep
 		while (OSCtoggle[0] == 1) {
 			//Reset external parameters
@@ -250,8 +278,6 @@ void processOSCMsg() {
 }
 
 void loop() {
-  
-  mp3.loop();
   
 	OSC_MsgRead();
 
@@ -389,6 +415,18 @@ void loop() {
 		} else
 			ledcWrite(6, SERVO_AUX_NEUTRO);
 
+    if (OSCpush[4]) // play sound
+    {
+      if (!mp3.playing)
+        mp3.connecttoSD("/mp3/alert.mp3");
+    }
+    
+    if (OSCpush[5]) // play sound
+    {
+      if (!mp3.playing)
+        mp3.connecttoSD("/mp3/valkyr.mp3");
+    }
+    
 		// Servo2
 		//ledcWrite(6, SERVO2_NEUTRO + (OSCfader[2] - 0.5) * SERVO2_RANGE);
 
@@ -407,7 +445,7 @@ void loop() {
 		}
 
 	} // End of new IMU data
-
+	
 	// Medium loop 7.5Hz
 	if (loop_counter >= 15) {
 		loop_counter = 0;

@@ -82,6 +82,15 @@ void OSC_MsgSend(char *c, unsigned char msgSize) {
 }
 
 void OSC_MsgRead() {
+  
+// OSC Messages read:  OSC: /page/command parameters
+//             FADER (1,2,3,4)  Ex: /1/fader1   f,  XXXX  => lenght:20, Param:  float (0.0-1.0)
+//             XY (1,2)          Ex: /1/xy1  f,f,    XXXXXXXX => length: 24 Params: float,float (0.0-1.0)
+//             PUSH (1,2,3,4)    Ex: /1/push1    f,  XXXX => length:20 Param: float
+//             TOGGLE (1,2,3,4)  Ex: /1/toggle1  f,  XXXX => length:20 Param: float
+//             MOVE              Ex: /1/m XXXX XXXX XXXX => length:16 Params: speed, steps1, steps2 (all float)  
+  
+  
 	int packetSize = udp.parsePacket();
 
 	if (packetSize <= MAX_BUFFER && packetSize > 0) {

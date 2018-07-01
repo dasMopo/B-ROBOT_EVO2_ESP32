@@ -89,7 +89,7 @@ float OSCxy1_x;
 float OSCxy1_y;
 float OSCxy2_x;
 float OSCxy2_y;
-uint8_t OSCpush[4];
+uint8_t OSCpush[8];
 uint8_t OSCtoggle[4];
 uint8_t OSCmove_mode;
 int16_t OSCmove_speed;

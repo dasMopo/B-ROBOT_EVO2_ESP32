@@ -154,6 +154,8 @@ class VS1053
     VS1053 ( uint8_t _cs_pin, uint8_t _dcs_pin, uint8_t _dreq_pin ) ;
     ~VS1053();
 
+    bool     playing ;
+    
     void     begin() ;                                   // Begin operation.  Sets pins correctly,
                                                          // and prepares SPI bus.
     void     stop_mp3client ();

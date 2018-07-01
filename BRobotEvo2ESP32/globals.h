@@ -90,7 +90,7 @@ extern float OSCxy1_x;
 extern float OSCxy1_y;
 extern float OSCxy2_x;
 extern float OSCxy2_y;
-extern uint8_t OSCpush[4];
+extern uint8_t OSCpush[8];
 extern uint8_t OSCtoggle[4];
 extern uint8_t OSCmove_mode;
 extern int16_t OSCmove_speed;
